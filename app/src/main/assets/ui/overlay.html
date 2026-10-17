@@ -20,20 +20,20 @@ h2{font-size:15px;margin:16px 10px 8px;font-weight:800}
 <div class="card"><div class="hd"><div id="pup"></div><h1>Video Grabber</h1><button class="x" id="cl">✕</button></div>
 <div id="title"></div><div id="status"></div><vg-panel id="pn"></vg-panel><div id="msg"></div>
 <button class="t" id="clip" style="display:none">📋 Clipboard se link lo</button>
-<h2>Downloads</h2><vg-jobs id="dl"></vg-jobs></div>
+<h2 id="dh" style="display:none">Downloading</h2><vg-jobs id="dl"></vg-jobs></div>
 <script>
-const $=id=>document.getElementById(id),pn=$('pn'),dl=$('dl');let url='',data=null;
+const $=id=>document.getElementById(id),pn=$('pn'),dl=$('dl');let url='',data=null;const FC={};const fmts=async u=>{const c=FC[u];if(c&&Date.now()-c.t<6e5)return c.d;const d=await api('formats',{url:u});FC[u]={d,t:Date.now()};return d};
 const api=(p,b)=>fetch('/api/'+p,{method:'POST',body:JSON.stringify(b||{})}).then(async r=>{const t=await r.text();let j;try{j=JSON.parse(t)}catch(e){j=t}if(!r.ok)throw new Error((j&&j.error)||t);return j});
 $('pup').innerHTML='<img src="logo.png" style="width:42px;height:42px;display:block">';pn.setAttribute('theme','dark');dl.setAttribute('theme','dark');
 const close=()=>api('close');$('sc').onclick=close;$('cl').onclick=close;
 async function check(clip){$('msg').textContent='';$('title').textContent='';pn.data=null;$('clip').style.display='none';$('status').textContent='🔎 Sniffing out the qualities…';
  try{const d=await api('detect',{clip:!!clip});if(!d.url){$('status').textContent='';$('msg').textContent='Link nahi mila. Browser mein video page kholo, ya app mein Share → Copy link karo.';$('clip').style.display='inline-block';return}
-  url=d.url;$('status').textContent=url;data=await api('formats',{url});$('title').textContent=data.title;$('status').textContent='';pn.data=data}
+  url=d.url;$('status').textContent=url;data=await fmts(url);$('title').textContent=data.title;$('status').textContent='';pn.data=data}
  catch(e){$('status').textContent='';$('msg').textContent='Oops: '+e.message;$('clip').style.display='inline-block'}}
 $('clip').onclick=()=>check(true);
 pn.addEventListener('vg-download',async e=>{const t=e.detail;try{await api('download',{url,height:t.height,size:t.size,title:data.title})}catch(x){$('msg').textContent='Oops: '+x.message}});
 const act=async(a,id)=>{try{await api(a,{id})}catch(e){$('msg').textContent='Oops: '+e.message}};
 pn.addEventListener('vg-job',e=>act(e.detail.act,e.detail.id));dl.addEventListener('vg-job',e=>act(e.detail.act,e.detail.id));
-setInterval(async()=>{try{const L=await api('jobs');dl.data=L;const m={};L.filter(j=>j.url===url).forEach(j=>{if(!m[j.height]||m[j.height].id<j.id)m[j.height]=j});pn.jobs=m}catch(e){}},800);
+setInterval(async()=>{try{const L=await api('jobs');const A=L.filter(j=>j.status==='running'||j.status==='paused'||j.status==='error');dl.data=A;$('dh').style.display=A.length?'block':'none';dl.style.display=A.length?'block':'none';const m={};L.filter(j=>j.url===url).forEach(j=>{if(!m[j.height]||m[j.height].id<j.id)m[j.height]=j});pn.jobs=m}catch(e){}},800);
 setTimeout(()=>check(false),350);
 </script></body></html>

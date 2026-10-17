@@ -61,7 +61,20 @@ box-shadow:inset 0 -4px 6px rgba(80,20,140,.3),0 6px 14px rgba(255,77,141,.4);tr
 .dh{display:flex;align-items:center;gap:10px}.dh span{flex:1;min-width:0;font-size:12.5px;font-weight:800;color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.pb.sm{padding:5px 12px;font-size:11.5px}
 .sp{background:var(--trk);border-radius:22px;padding:8px 12px 4px;box-shadow:inset 0 2px 4px rgba(0,0,0,.12)}.spl{display:flex;justify-content:space-between;font-size:10.5px;font-weight:800;color:var(--mu)}.sp svg{width:100%;height:62px;display:block}
 .st.s6{grid-template-columns:repeat(3,1fr);margin-top:0}.dt .jb{margin-top:0}.ok2{color:#2ecb8f;font-weight:800;font-size:14px;text-align:center}
-.pb.g{background:var(--row);color:var(--tx);border-color:var(--bd);box-shadow:inset 0 2px 0 rgba(255,255,255,.4)}`;
+.pb.g{background:var(--row);color:var(--tx);border-color:var(--bd);box-shadow:inset 0 2px 0 rgba(255,255,255,.4)}
+/* --- mobile fit: nothing wraps to a 2nd line --- */
+.p{padding:10px;gap:8px;border-radius:30px}
+.r{flex-wrap:nowrap;gap:6px;padding:10px 10px 10px 14px;border-radius:26px;min-width:0}
+.q{overflow:hidden;text-overflow:ellipsis;font-size:15px;flex:1 1 auto;min-width:0}
+.c{font-size:10px;padding:2px 7px;margin-left:5px}
+.m{flex:0 1 auto;min-width:0;max-width:34%}
+.s,.s2{overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.b{width:40px;height:40px}.b.sm{width:28px;height:28px}
+.e{max-width:110px;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.st{gap:5px}.st div{padding:5px 2px 6px;min-width:0}.st u{font-size:11.5px;overflow:hidden;text-overflow:ellipsis;display:block}.st i{font-size:9px;letter-spacing:.02em}
+.jb{flex-wrap:nowrap}.pb{padding:7px 14px;white-space:nowrap}
+@media(max-width:380px){.q{font-size:14px}.c{display:none}.m{max-width:30%}.s{font-size:11.5px}.b{width:36px;height:36px}.pb{padding:6px 11px;font-size:12px}}
+`;
 const sv = (d, w = 2.6, extra = '') => `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" ${extra}>${d}</svg>`;
 const ICON = sv('<path d="M12 4v11"/><path d="M7 11l5 5 5-5"/><path d="M5 20h14"/>');
 const OK = sv('<path d="M5 12l5 5 9-10"/>', 3);

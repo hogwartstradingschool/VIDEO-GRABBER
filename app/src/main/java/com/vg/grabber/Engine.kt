@@ -20,6 +20,7 @@ import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
@@ -82,6 +83,8 @@ object Engine {
     @Synchronized fun attach(ctx: Context) {
         if (attached) return
         app = ctx.applicationContext; attached = true
+        System.setProperty("http.maxConnections", "64")          // keep-alive pool: 32 parallel chunks ek hi socket pool share karein
+        scope.launch { runCatching { ensureInit() } }            // preheat: pehli baar Python/yt-dlp unzip + init pehle hi ho jaye
         runCatching {
             val f = File(app.filesDir, "jobs.json")
             if (f.exists()) {
@@ -103,12 +106,20 @@ object Engine {
         YoutubeDL.getInstance().init(app)
         FFmpeg.getInstance().init(app)
         inited = true
-        scope.launch { updateYtDlp() }
+        scope.launch { maybeUpdate() }
+    }
+
+    // yt-dlp update har app-start par nahi: 12 ghante mein ek baar, aur pehle kaam (formats) ke baad (20s delay)
+    private suspend fun maybeUpdate() {
+        val sp = app.getSharedPreferences("vg", 0)
+        if (System.currentTimeMillis() - sp.getLong("ytdlp_upd", 0L) < 12 * 3600_000L) return
+        delay(20_000)
+        if (updateYtDlp()) sp.edit().putLong("ytdlp_upd", System.currentTimeMillis()).apply()
     }
 
     // yt-dlp ko latest karna (sites roz badalti hain); reflection => library version se compile nahi tootta
-    private fun updateYtDlp() {
-        runCatching {
+    private fun updateYtDlp(): Boolean {
+        return runCatching {
             val y = YoutubeDL.getInstance()
             val m = y.javaClass.methods.first { it.name == "updateYoutubeDL" && it.parameterTypes.size == 2 }
             val ch = m.parameterTypes[1]
@@ -116,7 +127,7 @@ object Engine {
             ch.declaredFields.firstOrNull { it.name.contains("STABLE") }?.let { it.isAccessible = true; inst = it.get(null) }
             if (inst == null) ch.declaredClasses.firstOrNull { it.simpleName.contains("STABLE") }?.let { inst = it.getDeclaredField("INSTANCE").get(null) }
             m.invoke(y, app, inst)
-        }
+        }.isSuccess
     }
 
     private fun persist() {
@@ -180,25 +191,60 @@ object Engine {
         val tbr = f.optDouble("tbr", 0.0)
         return if (!tbr.isNaN() && tbr > 0 && dur > 0) (tbr * 125 * dur).toLong() else 0L
     }
-    private fun tierOf(h: Int): Int { for ((t, _) in TIERS) if (h >= t * 0.9) return t; return 0 }
+    private fun chipOf(h: Int): String { for ((t, c) in TIERS) if (h >= t * 0.9) return c; return "LOW" }
 
-    private fun getInfo(url: String): JSONObject {
+    private fun runInfo(url: String, embedded: Boolean): JSONObject {
         val rq = YoutubeDLRequest(url)
-        rq.addOption("--no-playlist"); rq.addOption("-J")
+        rq.addOption("--no-playlist"); rq.addOption("-J"); rq.addOption("--no-warnings")
+        rq.addOption("--socket-timeout", "20"); rq.addOption("--extractor-retries", "2")
+        if (embedded) rq.addOption("--extractor-args", EMB)
         val r = YoutubeDL.getInstance().execute(rq, "info-" + System.nanoTime()) { _, _, _ -> }
         val out = r.out
         return JSONObject(out.substring(out.indexOf('{')))
     }
 
+    // age-restricted / "Sign in to confirm your age" => embedded/TV clients se bina login retry
+    private const val EMB = "youtube:player_client=tv_embedded,web_embedded,tv"
+    private fun ageGate(e: Exception): Boolean {
+        val m = (e.message ?: "").lowercase()
+        return m.contains("confirm your age") || m.contains("age-restricted") || m.contains("age restricted") ||
+            m.contains("sign in to confirm") || m.contains("inappropriate for some users") || m.contains("age verification")
+    }
+
+    private fun getInfo(url: String): JSONObject =
+        try { runInfo(url, false) } catch (e: Exception) { if (ageGate(e)) runInfo(url, true) else throw e }
+
     private fun formatsRaw(url: String): JSONObject {
         ensureInit()
         val info = getInfo(url)
         fmtCache[url] = System.currentTimeMillis() to info
-        if (fmtCache.size > 12) fmtCache.keys.firstOrNull()?.let { fmtCache.remove(it) }
+        if (fmtCache.size > 12) fmtCache.keys.firstOrNull { it != url }?.let { fmtCache.remove(it) }
         return info
     }
 
-    suspend fun formats(url: String): JSONObject = withContext(Dispatchers.IO) { buildTiers(formatsRaw(url)) }
+    private val inflight = HashMap<String, Deferred<JSONObject>>()
+    // cache (20 min) + ek hi link ki dohri request ek hi baar chale (prefetch + user click)
+    private suspend fun infoFor(url: String): JSONObject {
+        fmtCache[url]?.let { if (System.currentTimeMillis() - it.first < 1_200_000) return it.second }
+        val d = synchronized(inflight) {
+            inflight[url] ?: scope.async {
+                try { formatsRaw(url) } finally { synchronized(inflight) { inflight.remove(url) } }
+            }.also { inflight[url] = it }
+        }
+        return d.await()
+    }
+
+    @Volatile private var lastPrefetch = 0L
+    // Detector jab video page dekhe to qualities pehle se nikal lo => popup foran khulta hai
+    fun prefetch(url: String) {
+        if (!attached) return
+        val now = System.currentTimeMillis()
+        if (now - lastPrefetch < 3000) return
+        lastPrefetch = now
+        scope.launch { runCatching { infoFor(url) } }
+    }
+
+    suspend fun formats(url: String): JSONObject = withContext(Dispatchers.IO) { buildTiers(infoFor(url)) }
 
     private fun buildTiers(info: JSONObject): JSONObject {
         val fa = info.optJSONArray("formats") ?: JSONArray()
@@ -208,15 +254,17 @@ object Engine {
         val vids = fm.filter { it.optInt("height", 0) > 0 && it.s("vcodec") != "none" }
         val auds = fm.filter { val a = it.s("acodec"); val v = it.s("vcodec"); a.isNotEmpty() && a != "none" && (v.isEmpty() || v == "none") }
         val aSize = auds.maxOfOrNull { fsize(it, dur) } ?: 0L
-        val groups = HashMap<Int, MutableList<JSONObject>>()
-        for (f in vids) { val t = tierOf(f.optInt("height")); if (t > 0) groups.getOrPut(t) { ArrayList() }.add(f) }
+        // har alag height ki apni row (900p ke saath 720/480/360 bhi), 8% se kam farq wali heights ek ginte hain
+        val byH = vids.groupBy { it.optInt("height") }.toSortedMap(reverseOrder<Int>())
         val tiers = JSONArray()
-        for ((t, chip) in TIERS) {
-            val g = groups[t] ?: continue
-            val h = g.maxOf { it.optInt("height") }
-            val best = g.filter { it.optInt("height") == h }.maxByOrNull { fsize(it, dur) }!!
+        var lastKept = 0
+        for ((h, g) in byH) {
+            if (tiers.length() >= 8) break
+            if (lastKept != 0 && h > lastKept * 0.92) continue
+            val best = g.maxByOrNull { fsize(it, dur) }!!
             val size = fsize(best, dur) + (if (best.s("acodec") == "none") aSize else 0L)
-            tiers.put(JSONObject().put("tier", t).put("height", h).put("chip", chip).put("size", size))
+            tiers.put(JSONObject().put("tier", h).put("height", h).put("chip", chipOf(h)).put("size", size))
+            lastKept = h
         }
         if (tiers.length() == 0 && vids.isNotEmpty()) {
             val h = vids.maxOf { it.optInt("height") }
@@ -301,13 +349,19 @@ object Engine {
     // ---------- TURBO ----------
     private fun pickFormats(info: JSONObject, h: Int): List<JSONObject>? {
         val fa = info.optJSONArray("formats") ?: return null
-        val fm = (0 until fa.length()).mapNotNull { fa.optJSONObject(it) }.filter {
+        val all = (0 until fa.length()).mapNotNull { fa.optJSONObject(it) }
+        // googlevideo URL mein clen=<bytes> hota hai => exact size mil jata hai, turbo zyada formats par chalta hai
+        for (f in all) if (f.optLong("filesize", 0) <= 0) Regex("[?&]clen=(\\d+)").find(f.s("url"))?.let { f.put("filesize", it.groupValues[1].toLong()) }
+        val fm = all.filter {
             !it.isNull("url") && it.s("protocol").let { p -> p == "http" || p == "https" } && it.optLong("filesize", 0) > 0
         }
         val lim = if (h > 0) h else 99999
+        val wantH = all.filter { val vc = it.s("vcodec"); vc.isNotEmpty() && vc != "none" && it.optInt("height", 0) in 1..lim }
+            .maxOfOrNull { it.optInt("height") } ?: 0
         val vids = fm.filter { val vc = it.s("vcodec"); vc.isNotEmpty() && vc != "none" && it.optInt("height", 0) in 1..lim }
         if (vids.isEmpty()) return null
         val hh = vids.maxOf { it.optInt("height") }
+        if (hh < wantH * 0.95) return null                                // chuni hui quality turbo mein nahi => yt-dlp (kam quality chupke se na utre)
         val avc = Regex("^(avc1|h264)")
         fun rank(f: JSONObject) = (if (avc.containsMatchIn(f.s("vcodec"))) 2 else 0) + (if (f.s("ext") == "mp4") 1 else 0)
         val v = vids.filter { it.optInt("height") == hh }
@@ -325,10 +379,12 @@ object Engine {
         val gv = URL(u).host.endsWith("googlevideo.com", true)
         if (gv) u = if (Regex("[?&]range=").containsMatchIn(u)) u.replace(Regex("([?&])range=[^&]*"), "$1range=$a-$b") else "$u&range=$a-$b"
         val c = URL(u).openConnection() as HttpURLConnection
-        c.connectTimeout = 30000; c.readTimeout = 30000
+        c.connectTimeout = 20000; c.readTimeout = 25000; c.useCaches = false
         f.optJSONObject("http_headers")?.let { h -> h.keys().forEach { k -> runCatching { c.setRequestProperty(k, h.getString(k)) } } }
+        c.setRequestProperty("Accept-Encoding", "identity")
         if (!gv) c.setRequestProperty("Range", "bytes=$a-$b")
         ctl.conns.add(c)
+        var good = false
         try {
             val code = c.responseCode
             if (code != 200 && code != 206) throw IOException("HTTP $code")
@@ -341,8 +397,9 @@ object Engine {
                 }
             }
             if (off != len) throw IOException("short chunk $off")
+            good = true
             return buf
-        } finally { ctl.conns.remove(c); runCatching { c.disconnect() } }
+        } finally { ctl.conns.remove(c); if (!good) runCatching { c.disconnect() } }   // success par socket pool mein wapas (keep-alive) => har chunk par naya TLS handshake nahi
     }
 
     private suspend fun turboFile(f: JSONObject, part: File, st: TFile, ctl: Ctl) = coroutineScope {
@@ -404,9 +461,7 @@ object Engine {
     }
 
     private suspend fun runTurbo(j: Dl, tok: Any) {
-        val cached = fmtCache[j.url]
-        if (cached == null || System.currentTimeMillis() - cached.first > 1_200_000) withContext(Dispatchers.IO) { formatsRaw(j.url) }
-        val info = fmtCache[j.url]!!.second
+        val info = infoFor(j.url)
         val sel = pickFormats(info, j.height) ?: throw IOException("no direct formats")
         val key = sel.joinToString("+") { it.s("format_id") }
         if (j.td == null || j.tdKey != key) { j.tdKey = key; j.td = Array(sel.size) { TFile() } }
@@ -444,14 +499,18 @@ object Engine {
     // ---------- yt-dlp fallback ----------
     private suspend fun runYt(j: Dl, tok: Any) = withContext(Dispatchers.IO) {
         val dir = jobDir(j); val h = j.height
-        val rq = YoutubeDLRequest(j.url)
-        rq.addOption("--no-playlist")
-        rq.addOption("-f", if (h > 0) "bv*[height<=$h]+ba/b[height<=$h]/b" else "bv*+ba/b")
-        rq.addOption("-S", "res,vcodec:h264,acodec:m4a")
-        rq.addOption("--merge-output-format", "mp4"); rq.addOption("-N", "16")
-        rq.addOption("--continue"); rq.addOption("--retries", "15"); rq.addOption("--fragment-retries", "15")
-        rq.addOption("--socket-timeout", "30")
-        rq.addOption("-o", dir.absolutePath + "/%(title).120B [%(id)s].%(ext)s")
+        fun req(emb: Boolean): YoutubeDLRequest {
+            val rq = YoutubeDLRequest(j.url)
+            rq.addOption("--no-playlist"); rq.addOption("--no-warnings")
+            rq.addOption("-f", if (h > 0) "bv*[height<=$h]+ba/b[height<=$h]/b" else "bv*+ba/b")
+            rq.addOption("-S", "res,vcodec:h264,acodec:m4a")
+            rq.addOption("--merge-output-format", "mp4"); rq.addOption("-N", "16")
+            rq.addOption("--continue"); rq.addOption("--retries", "15"); rq.addOption("--fragment-retries", "15")
+            rq.addOption("--socket-timeout", "30")
+            if (emb) rq.addOption("--extractor-args", EMB)
+            rq.addOption("-o", dir.absolutePath + "/%(title).120B [%(id)s].%(ext)s")
+            return rq
+        }
         val pid = "vg-${j.id}-${System.nanoTime()}"; j.procId = pid
         val mon = launch {
             var last = dirBytes(dir)
@@ -466,11 +525,12 @@ object Engine {
             }
         }
         try {
-            YoutubeDL.getInstance().execute(rq, pid) { p, eta, line ->
+            fun go(emb: Boolean) = YoutubeDL.getInstance().execute(req(emb), pid) { p, eta, line ->
                 if (line.contains("[Merger]") || line.contains("[VideoRemuxer]") || line.contains("[ExtractAudio]")) {
                     j.merging = true; j.pct = 99.0; j.speed = 0.0; j.eta = 0.0
                 } else if (!j.merging && j.size <= 0) { j.pct = minOf(99.0, p.toDouble().coerceAtLeast(0.0)); j.eta = eta.toDouble().coerceAtLeast(0.0) }
             }
+            try { go(false) } catch (e: Exception) { if (j.token === tok && j.status == "running" && ageGate(e)) go(true) else throw e }
         } finally { mon.cancel() }
         if (j.token !== tok || j.status != "running") return@withContext
         val f = dir.listFiles()?.filter { !it.name.endsWith(".part") && !it.name.endsWith(".ytdl") && !it.name.startsWith(".") && it.length() > 0 }

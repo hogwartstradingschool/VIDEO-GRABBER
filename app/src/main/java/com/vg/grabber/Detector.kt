@@ -28,5 +28,16 @@ object Detector {
         if (p == pkg && u == url) return
         pkg = p; url = u
         Handler(Looper.getMainLooper()).post { listener?.invoke() }
+        // bubble ON ho aur video page khula ho to qualities pehle se nikal lo (popup tap par foran)
+        if (u != null && OverlayService.bubbleVisible && isKnown(u) && looksLikeVideo(u)) Engine.prefetch(u)
+    }
+
+    private val vidPath = Regex("/(shorts|reel|reels|video|videos|watch|status|clip|tv|p|v)/", RegexOption.IGNORE_CASE)
+    fun looksLikeVideo(u: String): Boolean {
+        val x = runCatching { java.net.URI(u) }.getOrNull() ?: return false
+        val host = x.host ?: return false
+        val path = x.path ?: ""; val q = x.query ?: ""
+        return q.contains("v=") || vidPath.containsMatchIn(path) ||
+            (host.endsWith("youtu.be") && path.length > 3) || host.endsWith("fb.watch") || host.endsWith("vm.tiktok.com")
     }
 }

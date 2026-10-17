@@ -10,6 +10,8 @@ class GrabAccessibilityService : AccessibilityService() {
     private val ids = listOf("url_bar", "mozac_browser_toolbar_url_view", "location_bar_edit_text",
         "url_field", "search_box_text", "addressbar", "url")
 
+    override fun onServiceConnected() { super.onServiceConnected(); Engine.attach(applicationContext) }
+
     override fun onAccessibilityEvent(e: AccessibilityEvent) {
         val pkg = e.packageName?.toString() ?: return
         if (pkg == packageName || pkg == "com.android.systemui") return
