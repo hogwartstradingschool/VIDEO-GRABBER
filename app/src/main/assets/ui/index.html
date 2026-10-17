@@ -1,0 +1,64 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Video Grabber</title>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{--page:#0a0a16;--tx:#fff;--mu:#d2d4f4;--gl:rgba(40,30,86,.5);--bd:rgba(255,255,255,.38)}
+body.light{--page:#f3f1ff;--tx:#1b1638;--mu:#6d7099;--gl:rgba(255,255,255,.6);--bd:rgba(255,255,255,.95)}
+*{box-sizing:border-box}html,body{margin:0}body{min-height:100vh;font-family:Manrope,Nunito,"Segoe UI",system-ui,sans-serif;color:var(--tx);background:var(--page);padding:0 0 70px;overflow-x:hidden}
+.app{max-width:640px;margin:0 auto;padding:18px 18px 10px}
+.tb{position:sticky;top:0;z-index:5;backdrop-filter:blur(24px) saturate(200%);-webkit-backdrop-filter:blur(24px) saturate(200%);background:var(--gl);border-bottom:2px solid var(--bd);box-shadow:0 6px 24px rgba(60,20,120,.2)}.tb .top{max-width:640px;margin:0 auto;padding:10px 18px;margin-bottom:0}
+.sbar{position:fixed;left:0;right:0;bottom:0;z-index:5;backdrop-filter:blur(24px) saturate(200%);-webkit-backdrop-filter:blur(24px) saturate(200%);background:var(--gl);border-top:2px solid var(--bd)}.sbar div{max-width:640px;margin:0 auto;padding:8px 18px;display:flex;align-items:center;gap:12px;font-size:12px;font-weight:800;color:var(--mu)}.sbar span{flex:1}.sbar .t{padding:6px 14px}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#2ecb8f;margin-right:6px;box-shadow:0 0 8px #2ecb8f}
+.bl{position:fixed;border-radius:50%;filter:blur(46px);opacity:.75;z-index:-1;animation:fl 14s ease-in-out infinite alternate}
+.b1{width:300px;height:300px;background:#ff4d8d;left:-90px;top:-60px}.b2{width:340px;height:340px;background:#7c5cff;right:-120px;top:40px;animation-delay:-5s}.b3{width:300px;height:300px;background:#22d3ee;right:-40px;bottom:-110px;animation-delay:-9s;opacity:.5}
+body.light .bl{opacity:.4}@keyframes fl{to{transform:translate(40px,60px) scale(1.15)}}
+.top{display:flex;align-items:center;gap:12px;margin-bottom:18px}.top svg{width:44px;height:44px;animation:bob 1.8s ease-in-out infinite}@keyframes bob{50%{transform:translateY(-4px) rotate(-5deg)}}
+.top div{flex:1}h1{margin:0;font-size:21px;font-weight:800;background:linear-gradient(135deg,#ff4d8d,#7c5cff);-webkit-background-clip:text;color:transparent}.top p{margin:2px 0 0;font-size:12px;font-weight:700;color:var(--mu)}
+.tg{width:44px;height:44px;border-radius:50%;border:2px solid var(--bd);background:var(--gl);backdrop-filter:blur(20px);color:var(--tx);font-size:19px;cursor:pointer;box-shadow:inset 0 3px 0 rgba(255,255,255,.6);transition:transform .25s cubic-bezier(.34,1.8,.64,1)}.tg:hover{transform:rotate(20deg) scale(1.1)}
+.g{background:linear-gradient(160deg,rgba(255,255,255,.2),transparent 45%),var(--gl);backdrop-filter:blur(28px) saturate(200%);-webkit-backdrop-filter:blur(28px) saturate(200%);border:2px solid var(--bd);box-shadow:inset 0 3px 0 rgba(255,255,255,.7),0 16px 40px rgba(60,20,120,.3)}
+.in{display:flex;gap:8px;padding:8px;border-radius:999px;margin-bottom:14px}
+input{flex:1;min-width:0;background:transparent;border:0;outline:0;color:var(--tx);font:700 14px Manrope,sans-serif;padding:0 14px}input::placeholder{color:var(--mu)}
+.go,.t{border:2px solid rgba(255,255,255,.9);color:#fff;font:800 14px Manrope,sans-serif;border-radius:999px;cursor:pointer;transition:transform .25s cubic-bezier(.34,1.8,.64,1);background:radial-gradient(circle at 30% 10%,rgba(255,255,255,.55),transparent 45%),linear-gradient(135deg,#ff5c98,#8a64ff);box-shadow:inset 0 -4px 6px rgba(80,20,140,.3),0 8px 18px rgba(255,77,141,.45)}
+.go{padding:11px 24px}.go:hover,.t:hover{transform:scale(1.06) rotate(-1.5deg)}.go:active,.t:active{transform:scale(.92,1.08)}.go:disabled{opacity:.6}
+.t{padding:9px 18px;font-size:12.5px;background:var(--gl);color:var(--tx);border-color:var(--bd);box-shadow:inset 0 3px 0 rgba(255,255,255,.55)}
+#title{font-weight:800;font-size:14px;margin:0 8px 10px;line-height:1.35}#msg{color:#ff6b8a;font-weight:800;font-size:13px;margin:8px 8px;white-space:pre-wrap}
+h2{font-size:15px;margin:22px 8px 10px;font-weight:800}.ft{margin-top:14px;display:flex;gap:8px}
+</style></head><body class="">
+<script src="bridge.js"></script>
+<div class="bl b1"></div><div class="bl b2"></div><div class="bl b3"></div>
+<div class="tb"><div class="top"><div id="pup"></div><div><h1>Video Grabber</h1><p>Paste a link, pick a quality, done!</p></div><button class="tg" id="th" aria-label="Switch theme">🌙</button></div></div>
+<div class="app">
+<div class="g" id="setup" style="display:none;border-radius:32px;padding:14px 16px;margin-bottom:14px"><b style="font-size:14px">⚙ Setup (sirf ek baar)</b><div id="sl"></div></div>
+<div class="in g"><input id="u" placeholder="Paste a video link here…"><button class="go" id="go">Check</button></div>
+<div id="title"></div><vg-panel id="pn"></vg-panel><div id="msg"></div>
+<h2>Downloads</h2><vg-jobs id="dl"></vg-jobs>
+</div>
+<div class="sbar"><div><span id="sb"><i class="dot"></i>Ready</span><button class="t" id="fo">📁 Open downloads folder</button></div></div>
+<script src="panel.js"></script>
+<script>
+const TOKEN='__TOKEN__';
+const $=id=>document.getElementById(id), pn=$('pn'), dl=$('dl');
+const api=(p,b)=>fetch('/api/'+p,{method:b?'POST':'GET',headers:{'x-vg-token':TOKEN,'content-type':'application/json'},body:b?JSON.stringify(b):undefined}).then(async r=>{const t=await r.text();let j;try{j=JSON.parse(t)}catch(e){j=t}if(!r.ok)throw new Error((j&&j.error)||t||r.status);return j});
+let url='',data=null;
+$('pup').innerHTML=window.VGA?'<img src="logo.png" style="width:46px;height:46px;display:block">':window.VGPanel.PUPPY;
+function theme(l){document.body.classList.toggle('light',l);const t=l?'light':'dark';pn.setAttribute('theme',t);dl.setAttribute('theme',t);$('th').textContent=l?'☀️':'🌙';try{localStorage.vgTheme=t}catch(e){}}
+theme((()=>{try{return localStorage.vgTheme?localStorage.vgTheme==='light':matchMedia('(prefers-color-scheme: light)').matches}catch(e){return false}})());
+$('th').onclick=()=>theme(!document.body.classList.contains('light'));
+$('go').onclick=async()=>{url=$('u').value.trim();if(!url)return;$('msg').textContent='';$('title').textContent='';pn.data=null;$('go').disabled=true;$('go').textContent='Sniffing…';
+ try{data=await api('formats',{url});$('title').textContent=data.title;pn.data=data}catch(e){$('msg').textContent='Oops: '+e.message}
+ $('go').disabled=false;$('go').textContent='Check'};
+$('u').addEventListener('keydown',e=>{if(e.key==='Enter')$('go').click()});
+pn.addEventListener('vg-download',async e=>{const t=e.detail;try{await api('download',{url,height:t.height,size:t.size,title:data.title})}catch(x){$('msg').textContent='Oops: '+x.message}});
+const act=async(a,id)=>{try{await api(a,{id})}catch(e){$('msg').textContent='Oops: '+e.message}};
+pn.addEventListener('vg-job',e=>act(e.detail.act,e.detail.id));dl.addEventListener('vg-job',e=>act(e.detail.act,e.detail.id));
+setInterval(async()=>{try{const L=await api('jobs');dl.data=L;{const r=L.filter(j=>j.status==='running');$('sb').innerHTML='<i class="dot"></i>'+(r.length?r.length+' downloading · '+(r.reduce((a,j)=>a+(j.speed||0),0)/1e6).toFixed(1)+' MB/s total':'Ready')}const m={};L.filter(j=>j.url===url).forEach(j=>{if(!m[j.height]||m[j.height].id<j.id)m[j.height]=j});pn.jobs=m}catch(e){}},800);
+$('fo').onclick=()=>api('open-folder',{});
+if(window.VGA){$('setup').style.display='block';
+ const IT=[['overlay','Overlay (Display over other apps)'],['a11y','Accessibility (link detect)'],['notif','Notifications'],['storage','Storage'],['bubble','Shutter bubble (ON/OFF)']];
+ const perm=async()=>{try{const s=await api('perm');$('sl').innerHTML=IT.filter(i=>!(i[0]==='notif'&&s.sdk<33)&&!(i[0]==='storage'&&s.sdk>28)).map(i=>'<div style="display:flex;align-items:center;gap:10px;margin:8px 0"><span style="flex:1;font-weight:800;font-size:13px">'+(s[i[0]]?'✅ ':'❌ ')+i[1]+'</span><button class="t" data-p="'+i[0]+'">'+(i[0]==='bubble'?(s.bubble?'Stop':'Start'):(s[i[0]]?'OK':'Allow'))+'</button></div>').join('')}catch(e){}};
+ $('sl').onclick=async e=>{const b=e.target.closest('button');if(!b)return;await api('perm-do',{name:b.dataset.p});setTimeout(perm,600)};
+ window.__vgperm=perm;perm();setInterval(perm,2500);
+ $('u').placeholder='Paste a video link here…';
+}
+
+</script></body></html>

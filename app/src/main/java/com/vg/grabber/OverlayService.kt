@@ -1,24 +1,35 @@
 package com.vg.grabber
 
-import android.app.*
-import android.content.ClipboardManager
-import android.content.ContentValues
-import android.content.Context
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.Service
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
-import android.media.MediaScannerConnection
-import android.os.*
-import android.provider.MediaStore
-import android.view.*
-import android.webkit.MimeTypeMap
-import android.widget.*
-import com.yausername.ffmpeg.FFmpeg
-import com.yausername.youtubedl_android.YoutubeDL
-import com.yausername.youtubedl_android.YoutubeDLRequest
-import kotlinx.coroutines.*
-import java.io.File
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
+import android.view.Gravity
+import android.view.KeyEvent
+import android.view.MotionEvent
+import android.view.View
+import android.view.WindowManager
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.FrameLayout
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.TextView
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 class OverlayService : Service() {
     companion object {
@@ -26,92 +37,75 @@ class OverlayService : Service() {
         @Volatile var bubbleVisible = false
         const val ACTION_SHOW = "vg.show"
         const val ACTION_STOP = "vg.stop"
+        const val ACTION_KEEP = "vg.keep"
         const val EXTRA_URL = "url"
         private const val CH = "vg"
     }
 
-    private class Opt(val label: String, val sel: String, val audio: Boolean)
-
     private lateinit var wm: WindowManager
-    private var bubble: TextView? = null
+    private var bubble: LinearLayout? = null
+    private var badge: TextView? = null
     private var panel: FrameLayout? = null
-    private var titleV: TextView? = null
-    private var statusV: TextView? = null
-    private var listBox: LinearLayout? = null
+    private var webView: WebView? = null
+    private var pending: String? = null
     private val main = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    private var inited = false
-    private var downloading = 0
 
     override fun onBind(i: Intent?): IBinder? = null
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+    private val host = object : Bridge.Host {
+        override fun close() { main.post { closePanel() } }
+        override fun pendingUrl(): String? = pending
+        override fun perm(name: String) {}
+    }
 
     // ---------- lifecycle ----------
     override fun onStartCommand(i: Intent?, f: Int, id: Int): Int {
         startForeground(1, notif("Video Grabber active", -1))
         if (!::wm.isInitialized) {
             wm = getSystemService(WINDOW_SERVICE) as WindowManager
-            scope.launch(Dispatchers.IO) { runCatching { ensureInit(); updateYtDlp() } }
+            Engine.attach(this)
+            scope.launch {
+                while (isActive) {
+                    delay(1000)
+                    refreshBubble()
+                    val s = Engine.summary()
+                    getSystemService(NotificationManager::class.java).notify(1, notif(s.first, s.second))
+                    maybeStop()
+                }
+            }
         }
         running = true
-        when (i?.action) {
-            ACTION_STOP -> {
+        when {
+            i?.action == ACTION_STOP -> {
                 Prefs.set(this, false); removeBubble()
-                if (downloading == 0 && panel == null) { stopSelf(); return START_NOT_STICKY }
+                if (Engine.activeCount() == 0 && panel == null) { stopSelf(); return START_NOT_STICKY }
             }
-            ACTION_SHOW -> {
+            i?.action == ACTION_SHOW -> {
                 if (Prefs.on(this)) addBubble()
-                showPanel(i.getStringExtra(EXTRA_URL))
+                showPanel(i!!.getStringExtra(EXTRA_URL))
             }
+            i?.action == ACTION_KEEP -> {}
+            i == null -> if (Prefs.on(this)) addBubble()
             else -> { Prefs.set(this, true); addBubble() }
         }
         return START_STICKY
     }
 
     private fun maybeStop() {
-        if (!Prefs.on(this) && panel == null && downloading == 0) stopSelf()
-    }
-
-    private fun removeBubble() {
-        runCatching { bubble?.let { wm.removeView(it) } }
-        bubble = null; bubbleVisible = false; Detector.listener = null
+        if (!Prefs.on(this) && panel == null && Engine.activeCount() == 0) stopSelf()
     }
 
     override fun onDestroy() {
-        running = false
-        bubbleVisible = false
-        Detector.listener = null
+        running = false; bubbleVisible = false; Detector.listener = null
         runCatching { bubble?.let { wm.removeView(it) } }
         runCatching { panel?.let { wm.removeView(it) } }
+        runCatching { webView?.destroy() }
         scope.cancel()
         super.onDestroy()
     }
 
-    @Synchronized private fun ensureInit() {
-        if (inited) return
-        YoutubeDL.getInstance().init(applicationContext)
-        FFmpeg.getInstance().init(applicationContext)
-        inited = true
-    }
-
-    // yt-dlp ko latest karna (sites roz badalti hain). Reflection => library version se compile nahi tootta.
-    private fun updateYtDlp() {
-        runCatching {
-            val y = YoutubeDL.getInstance()
-            val m = y.javaClass.methods.first { it.name == "updateYoutubeDL" && it.parameterTypes.size == 2 }
-            val ch = m.parameterTypes[1]
-            var inst: Any? = null
-            ch.declaredFields.firstOrNull { it.name.contains("STABLE") }?.let { it.isAccessible = true; inst = it.get(null) }
-            if (inst == null) {
-                ch.declaredClasses.firstOrNull { it.simpleName.contains("STABLE") }?.let { c ->
-                    inst = c.getDeclaredField("INSTANCE").get(null)
-                }
-            }
-            m.invoke(y, applicationContext, inst)
-        }
-    }
-
-    // ---------- notification ----------
     private fun notif(text: String, progress: Int): Notification {
         val nm = getSystemService(NotificationManager::class.java)
         if (nm.getNotificationChannel(CH) == null)
@@ -121,226 +115,95 @@ class OverlayService : Service() {
         if (progress in 0..100) b.setProgress(100, progress, false)
         return b.build()
     }
-    private fun notifyDone(text: String) {
-        val nm = getSystemService(NotificationManager::class.java)
-        nm.notify(2, Notification.Builder(this, CH).setSmallIcon(android.R.drawable.stat_sys_download_done)
-            .setContentTitle("Video Grabber").setContentText(text).setAutoCancel(true).build())
-    }
-    private fun notifyNow(text: String, p: Int) =
-        getSystemService(NotificationManager::class.java).notify(1, notif(text, p))
 
-    // ---------- bubble ----------
+    // ---------- bubble (puppy pill, jaisa extension ka Download pill) ----------
     private fun addBubble() {
         if (bubble != null) return
-        val tv = TextView(this).apply {
-            text = "⬇"; textSize = 24f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xCC555555.toInt()) }
+        val pill = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(5), dp(4), dp(12), dp(4))
+            background = GradientDrawable().apply { cornerRadius = dp(40).toFloat(); setColor(0xD0281E56.toInt()); setStroke(dp(2), 0x73FFFFFF) }
+            elevation = dp(8).toFloat()
         }
-        val lp = WindowManager.LayoutParams(dp(54), dp(54), WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+        val ic = ImageView(this).apply { setImageResource(R.drawable.logo); scaleType = ImageView.ScaleType.FIT_CENTER }
+        pill.addView(ic, LinearLayout.LayoutParams(dp(38), dp(38)))
+        pill.addView(TextView(this).apply { text = "Download"; textSize = 14f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD },
+            LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
+        val bd = TextView(this).apply { textSize = 12f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD; gravity = Gravity.CENTER; setPadding(dp(8), dp(1), dp(8), dp(1)) }
+        pill.addView(bd, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
+        badge = bd
+
+        val lp = WindowManager.LayoutParams(-2, -2, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS, PixelFormat.TRANSLUCENT).apply {
             gravity = Gravity.TOP or Gravity.START; x = dp(8); y = dp(220)
         }
         var dx = 0f; var dy = 0f; var sx = 0; var sy = 0; var moved = false
-        tv.setOnTouchListener { _, e ->
+        pill.setOnTouchListener { _, e ->
             when (e.action) {
                 MotionEvent.ACTION_DOWN -> { dx = e.rawX; dy = e.rawY; sx = lp.x; sy = lp.y; moved = false }
                 MotionEvent.ACTION_MOVE -> {
                     val mx = (e.rawX - dx).toInt(); val my = (e.rawY - dy).toInt()
                     if (Math.abs(mx) > dp(8) || Math.abs(my) > dp(8)) moved = true
-                    if (moved) { lp.x = sx + mx; lp.y = sy + my; wm.updateViewLayout(tv, lp) }
+                    if (moved) { lp.x = sx + mx; lp.y = sy + my; wm.updateViewLayout(pill, lp) }
                 }
                 MotionEvent.ACTION_UP -> if (!moved) showPanel(null)
             }
             true
         }
-        wm.addView(tv, lp)
-        bubble = tv
-        bubbleVisible = true
+        wm.addView(pill, lp)
+        bubble = pill; bubbleVisible = true
         Detector.listener = { refreshBubble() }
         refreshBubble()
     }
 
-    private fun refreshBubble() {
-        val u = Detector.url
-        val c = when {
-            u == null -> 0xCC555555.toInt()
-            Detector.isKnown(u) -> 0xFF1DB954.toInt()
-            else -> 0xFFFF9800.toInt()
-        }
-        (bubble?.background as? GradientDrawable)?.setColor(c)
+    private fun removeBubble() {
+        runCatching { bubble?.let { wm.removeView(it) } }
+        bubble = null; badge = null; bubbleVisible = false; Detector.listener = null
     }
 
-    // ---------- panel ----------
-    private fun tv(t: String, size: Float, color: Int) = TextView(this).apply { text = t; textSize = size; setTextColor(color) }
+    private fun refreshBubble() {
+        val b = bubble ?: return
+        val u = Detector.url
+        val n = Engine.activeCount()
+        b.alpha = if (u != null || n > 0) 1f else 0.72f
+        badge?.apply {
+            if (n > 0) { text = "↓$n"; visibility = View.VISIBLE; background = GradientDrawable().apply { cornerRadius = dp(20).toFloat(); setColor(0x66FFFFFF) } }
+            else if (u != null) {
+                text = "●"; visibility = View.VISIBLE; background = null
+                setTextColor(if (Detector.isKnown(u)) 0xFF2ECB8F.toInt() else 0xFFFFA24C.toInt())
+            } else visibility = View.GONE
+        }
+    }
 
+    // ---------- panel: wahi purani UI (panel.js) WebView mein ----------
     private fun showPanel(forced: String?) {
         if (panel != null) return
+        pending = forced
+        val wv = WebView(this)
+        wv.setBackgroundColor(Color.TRANSPARENT)
+        wv.settings.javaScriptEnabled = true
+        wv.settings.domStorageEnabled = true
+        wv.webViewClient = WebViewClient()
+        wv.addJavascriptInterface(Bridge(this, wv, host), "VGA")
+        wv.loadUrl("file:///android_asset/ui/overlay.html")
         val root = object : FrameLayout(this) {
             override fun dispatchKeyEvent(e: KeyEvent): Boolean {
                 if (e.keyCode == KeyEvent.KEYCODE_BACK && e.action == KeyEvent.ACTION_UP) { closePanel(); return true }
                 return super.dispatchKeyEvent(e)
             }
         }
-        root.setBackgroundColor(0x88000000.toInt())
-        root.setOnClickListener { closePanel() }
-        val card = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(16), dp(16), dp(16))
-            background = GradientDrawable().apply { setColor(0xFF202124.toInt()); cornerRadius = dp(18).toFloat() }
-            setOnClickListener { }
-        }
-        val title = tv("⬇ Video Grabber", 18f, Color.WHITE)
-        val status = tv("", 14f, 0xFFBBBBBB.toInt())
-        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val sc = ScrollView(this).apply { addView(list) }
-        card.addView(title); card.addView(status)
-        card.addView(sc, LinearLayout.LayoutParams(-1, (resources.displayMetrics.heightPixels * 0.42).toInt()))
-        val close = Button(this).apply { text = "Close"; isAllCaps = false; setOnClickListener { closePanel() } }
-        card.addView(close)
-        root.addView(card, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply { setMargins(dp(10), 0, dp(10), dp(24)) })
-        titleV = title; statusV = status; listBox = list
-
+        root.addView(wv, FrameLayout.LayoutParams(-1, -1))
         val lp = WindowManager.LayoutParams(-1, -1, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN, PixelFormat.TRANSLUCENT)
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED, PixelFormat.TRANSLUCENT)
         wm.addView(root, lp)
-        panel = root
-        status.text = "Link check ho raha hai…"
-        root.postDelayed({ start(forced) }, 250)
-    }
-
-    private fun clipUrl(): String? {
-        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val t = cm.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString()
-        return Detector.normalize(t, false)
-    }
-
-    private fun start(forced: String?) {
-        listBox?.removeAllViews()
-        val url = forced ?: Detector.url ?: clipUrl()
-        if (url == null) {
-            statusV?.text = "❌ Link nahi mila.\nBrowser mein video page kholo, ya app mein Share → Copy link karo, phir dobara try karo."
-            addRow("📋 Clipboard se link lo") { start(null) }
-            return
-        }
-        analyze(url)
-    }
-
-    private fun addRow(text: String, click: () -> Unit) {
-        listBox?.addView(Button(this).apply {
-            this.text = text; isAllCaps = false; textSize = 16f; setOnClickListener { click() }
-        })
-    }
-
-    private fun sz(a: Long, b: Long) = if (a > 0) a else b
-    private fun mb(x: Long) = if (x > 0) " • ~" + (if (x > 1_000_000_000) "%.1f GB".format(x / 1e9) else "${x / 1_000_000} MB") else ""
-
-    private fun analyze(url: String) {
-        statusV?.text = "🔎 Qualities dhoondh raha hu…\n$url"
-        listBox?.removeAllViews()
-        scope.launch {
-            val r = withContext(Dispatchers.IO) {
-                runCatching {
-                    ensureInit()
-                    val rq = YoutubeDLRequest(url); rq.addOption("--no-playlist")
-                    YoutubeDL.getInstance().getInfo(rq)
-                }
-            }
-            val info = r.getOrNull()
-            if (info == null) {
-                statusV?.text = "❌ Is link se video nahi mili:\n" + (r.exceptionOrNull()?.message ?: "").lines().last().take(180)
-                addRow("📋 Clipboard se link lo") { start(null) }
-                return@launch
-            }
-            titleV?.text = info.title ?: "Video"
-            statusV?.text = "Quality chuno:"
-            val fm = info.formats ?: emptyList()
-            val audioSize = fm.filter { (it.vcodec ?: "none") == "none" && (it.acodec ?: "none") != "none" }
-                .maxOfOrNull { sz(it.fileSize, it.fileSizeApproximate) } ?: 0L
-            val heights = fm.filter { (it.vcodec ?: "none") != "none" && it.height > 0 }.map { it.height }.distinct().sortedDescending()
-            val opts = ArrayList<Opt>()
-            opts.add(Opt("🏆 Best available", "bv*+ba/b", false))
-            for (h in heights) {
-                val vids = fm.filter { it.height == h && (it.vcodec ?: "none") != "none" }
-                val vs = vids.maxOfOrNull { sz(it.fileSize, it.fileSizeApproximate) } ?: 0L
-                val needA = vids.none { (it.acodec ?: "none") != "none" }
-                val total = if (vs > 0) vs + (if (needA) audioSize else 0L) else 0L
-                opts.add(Opt("🎬 ${h}p${mb(total)}",
-                    "bv*[height<=$h][ext=mp4]+ba[ext=m4a]/bv*[height<=$h]+ba/b[height<=$h]/b", false))
-            }
-            opts.add(Opt("🎵 Sirf Audio (MP3)${mb(audioSize)}", "ba/b", true))
-            listBox?.removeAllViews()
-            for (o in opts) addRow(o.label) { download(url, o) }
-        }
-    }
-
-    private fun download(url: String, o: Opt) {
-        listBox?.removeAllViews()
-        statusV?.text = "⏳ Download shuru…"
-        val dir = File(cacheDir, "dl/${System.currentTimeMillis()}").apply { mkdirs() }
-        downloading++
-        scope.launch {
-            val r = withContext(Dispatchers.IO) {
-                runCatching {
-                    ensureInit()
-                    val rq = YoutubeDLRequest(url)
-                    rq.addOption("--no-playlist")
-                    rq.addOption("-f", o.sel)
-                    if (o.audio) { rq.addOption("-x"); rq.addOption("--audio-format", "mp3") }
-                    else rq.addOption("--merge-output-format", "mp4")
-                    rq.addOption("-o", dir.absolutePath + "/%(title).80s.%(ext)s")
-                    YoutubeDL.getInstance().execute(rq, "vg-" + System.currentTimeMillis()) { p, _, _ ->
-                        main.post {
-                            statusV?.text = "⏳ Downloading… ${p.toInt()}%"
-                            notifyNow("Downloading ${p.toInt()}%", p.toInt())
-                        }
-                    }
-                    val f = dir.listFiles()?.filter { !it.name.endsWith(".part") && !it.name.endsWith(".ytdl") && it.length() > 0 }
-                        ?.maxByOrNull { it.length() } ?: error("File nahi bani")
-                    saveFile(f)
-                }
-            }
-            downloading--
-            val ok = r.getOrNull()
-            if (ok != null) {
-                statusV?.text = "✅ Save ho gayi!\nGallery / Files → $ok"
-                notifyDone("✅ Download complete - Movies/VideoGrabber")
-            } else {
-                statusV?.text = "❌ Download fail:\n" + (r.exceptionOrNull()?.message ?: "").lines().last().take(180)
-                notifyDone("❌ Download fail")
-            }
-            maybeStop()
-        }
-    }
-
-    private fun saveFile(f: File): String {
-        val ext = f.extension.lowercase()
-        val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "video/mp4"
-        val audio = mime.startsWith("audio")
-        val rel = if (audio) "Music/VideoGrabber" else "Movies/VideoGrabber"
-        if (Build.VERSION.SDK_INT >= 29) {
-            val cv = ContentValues().apply {
-                put(MediaStore.MediaColumns.DISPLAY_NAME, f.name)
-                put(MediaStore.MediaColumns.MIME_TYPE, mime)
-                put(MediaStore.MediaColumns.RELATIVE_PATH, rel)
-            }
-            val coll = if (audio) MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-            else MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-            val uri = contentResolver.insert(coll, cv) ?: error("MediaStore insert fail")
-            contentResolver.openOutputStream(uri)!!.use { o -> f.inputStream().use { it.copyTo(o) } }
-        } else {
-            val d = File(Environment.getExternalStoragePublicDirectory(
-                if (audio) Environment.DIRECTORY_MUSIC else Environment.DIRECTORY_MOVIES), "VideoGrabber")
-            d.mkdirs()
-            val t = File(d, f.name); f.copyTo(t, true)
-            MediaScannerConnection.scanFile(this, arrayOf(t.absolutePath), null, null)
-        }
-        f.parentFile?.deleteRecursively()
-        return rel
+        panel = root; webView = wv
     }
 
     private fun closePanel() {
         runCatching { panel?.let { wm.removeView(it) } }
-        panel = null
+        runCatching { webView?.destroy() }
+        panel = null; webView = null; pending = null
         maybeStop()
     }
 }

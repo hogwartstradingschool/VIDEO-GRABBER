@@ -3,85 +3,64 @@ package com.vg.grabber
 import android.Manifest
 import android.app.Activity
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.view.Gravity
-import android.widget.*
+import android.view.ViewGroup
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.FrameLayout
+import android.widget.Toast
 import androidx.core.content.ContextCompat
 
-class MainActivity : Activity() {
-    private lateinit var box: LinearLayout
+class MainActivity : Activity(), Bridge.Host {
+    private lateinit var wv: WebView
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
-        val sv = ScrollView(this)
-        box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 60, 40, 60) }
-        sv.addView(box)
-        setContentView(sv)
+        window.statusBarColor = 0xFF0A0A16.toInt(); window.navigationBarColor = 0xFF0A0A16.toInt()
+        Engine.attach(this)
+        wv = WebView(this)
+        wv.setBackgroundColor(0xFF0A0A16.toInt())
+        wv.settings.javaScriptEnabled = true
+        wv.settings.domStorageEnabled = true
+        wv.webViewClient = WebViewClient()
+        wv.addJavascriptInterface(Bridge(this, wv, this), "VGA")
+        wv.loadUrl("file:///android_asset/ui/index.html")
+        val root = FrameLayout(this)
+        root.fitsSystemWindows = true
+        root.addView(wv, ViewGroup.LayoutParams(-1, -1))
+        setContentView(root)
     }
 
-    override fun onResume() { super.onResume(); render() }
+    override fun onResume() { super.onResume(); wv.evaluateJavascript("window.__vgperm&&window.__vgperm()", null) }
+    override fun onBackPressed() { finish() }
 
-    private fun a11yOn(): Boolean {
-        val s = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: ""
-        return s.contains(packageName)
-    }
+    override fun close() {}
+    override fun pendingUrl(): String? = null
 
-    private fun row(title: String, ok: Boolean, action: () -> Unit) {
-        val btn = Button(this).apply {
-            text = (if (ok) "✅ " else "❌ ") + title
-            isAllCaps = false
-            setOnClickListener { action() }
-        }
-        box.addView(btn)
-    }
-
-    private fun render() {
-        box.removeAllViews()
-        box.addView(TextView(this).apply { text = "⬇ Video Grabber"; textSize = 26f; setTextColor(Color.BLACK) })
-        box.addView(TextView(this).apply {
-            text = "\nSab ✅ karo, phir START dabao. Floating shutter bubble har app ke upar aa jayega."
-            textSize = 15f
-        })
-        row("1. Overlay (Display over other apps)", Settings.canDrawOverlays(this)) {
-            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
-        }
-        row("2. Accessibility (link detect karne ke liye)", a11yOn()) {
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-            Toast.makeText(this, "Agar greyed-out ho: App info > ⋮ > Allow restricted settings", Toast.LENGTH_LONG).show()
-        }
-        if (Build.VERSION.SDK_INT >= 33) {
-            val ok = ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-            row("3. Notifications", ok) { requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1) }
-        }
-        if (Build.VERSION.SDK_INT <= 28) {
-            val ok = ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
-            row("4. Storage", ok) { requestPermissions(arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), 2) }
-        }
-        box.addView(Button(this).apply {
-            text = if (OverlayService.bubbleVisible) "⏹ STOP shutter" else "▶ START shutter"
-            textSize = 18f
-            setOnClickListener {
-                if (OverlayService.bubbleVisible) {
-                    ContextCompat.startForegroundService(this@MainActivity, Intent(this@MainActivity, OverlayService::class.java).setAction(OverlayService.ACTION_STOP))
-                    postDelayed({ render() }, 400)
-                } else if (!Settings.canDrawOverlays(this@MainActivity)) {
-                    Toast.makeText(this@MainActivity, "Pehle Overlay permission do", Toast.LENGTH_SHORT).show()
-                } else {
-                    ContextCompat.startForegroundService(this@MainActivity, Intent(this@MainActivity, OverlayService::class.java))
-                    postDelayed({ render() }, 600)
+    override fun perm(name: String) {
+        runOnUiThread {
+            when (name) {
+                "overlay" -> startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+                "a11y" -> {
+                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    Toast.makeText(this, "Greyed-out ho to: App info > ⋮ > Allow restricted settings", Toast.LENGTH_LONG).show()
+                }
+                "notif" -> if (Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+                "storage" -> if (Build.VERSION.SDK_INT <= 28) requestPermissions(arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), 2)
+                "bubble" -> {
+                    if (OverlayService.bubbleVisible) {
+                        ContextCompat.startForegroundService(this, Intent(this, OverlayService::class.java).setAction(OverlayService.ACTION_STOP))
+                    } else if (!Settings.canDrawOverlays(this)) {
+                        Toast.makeText(this, "Pehle Overlay permission do", Toast.LENGTH_SHORT).show()
+                    } else {
+                        ContextCompat.startForegroundService(this, Intent(this, OverlayService::class.java))
+                    }
                 }
             }
-        })
-        box.addView(TextView(this).apply {
-            textSize = 14f
-            text = "\nShutter (Quick Settings) se ON/OFF: status bar neeche kheencho → ✏ edit → \"Video Grabber\" tile ko upar le aao. OFF karne par bubble chhup jata hai, lekin kisi app se Share → Video Grabber karo to popup phir bhi aata hai.\n\nKaise use karein:\n• Browser mein video page kholo → bubble GREEN ho jata hai → bubble dabao → quality chuno.\n" +
-                "• YouTube/Facebook/Instagram app mein: Share → Copy link, phir bubble dabao (ya Share → Video Grabber).\n" +
-                "• Files: Gallery/Files → Movies/VideoGrabber"
-        })
+        }
     }
 }
