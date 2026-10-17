@@ -23,6 +23,7 @@ import java.io.File
 class OverlayService : Service() {
     companion object {
         @Volatile var running = false
+        @Volatile var bubbleVisible = false
         const val ACTION_SHOW = "vg.show"
         const val ACTION_STOP = "vg.stop"
         const val EXTRA_URL = "url"
@@ -40,27 +41,45 @@ class OverlayService : Service() {
     private val main = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var inited = false
+    private var downloading = 0
 
     override fun onBind(i: Intent?): IBinder? = null
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     // ---------- lifecycle ----------
     override fun onStartCommand(i: Intent?, f: Int, id: Int): Int {
-        if (i?.action == ACTION_STOP) { stopSelf(); return START_NOT_STICKY }
-        startForeground(1, notif("Shutter ON - bubble dabao", -1))
-        if (!running) {
-            running = true
+        startForeground(1, notif("Video Grabber active", -1))
+        if (!::wm.isInitialized) {
             wm = getSystemService(WINDOW_SERVICE) as WindowManager
-            addBubble()
-            Detector.listener = { refreshBubble() }
             scope.launch(Dispatchers.IO) { runCatching { ensureInit(); updateYtDlp() } }
         }
-        if (i?.action == ACTION_SHOW) showPanel(i.getStringExtra(EXTRA_URL))
+        running = true
+        when (i?.action) {
+            ACTION_STOP -> {
+                Prefs.set(this, false); removeBubble()
+                if (downloading == 0 && panel == null) { stopSelf(); return START_NOT_STICKY }
+            }
+            ACTION_SHOW -> {
+                if (Prefs.on(this)) addBubble()
+                showPanel(i.getStringExtra(EXTRA_URL))
+            }
+            else -> { Prefs.set(this, true); addBubble() }
+        }
         return START_STICKY
+    }
+
+    private fun maybeStop() {
+        if (!Prefs.on(this) && panel == null && downloading == 0) stopSelf()
+    }
+
+    private fun removeBubble() {
+        runCatching { bubble?.let { wm.removeView(it) } }
+        bubble = null; bubbleVisible = false; Detector.listener = null
     }
 
     override fun onDestroy() {
         running = false
+        bubbleVisible = false
         Detector.listener = null
         runCatching { bubble?.let { wm.removeView(it) } }
         runCatching { panel?.let { wm.removeView(it) } }
@@ -102,11 +121,17 @@ class OverlayService : Service() {
         if (progress in 0..100) b.setProgress(100, progress, false)
         return b.build()
     }
+    private fun notifyDone(text: String) {
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.notify(2, Notification.Builder(this, CH).setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setContentTitle("Video Grabber").setContentText(text).setAutoCancel(true).build())
+    }
     private fun notifyNow(text: String, p: Int) =
         getSystemService(NotificationManager::class.java).notify(1, notif(text, p))
 
     // ---------- bubble ----------
     private fun addBubble() {
+        if (bubble != null) return
         val tv = TextView(this).apply {
             text = "⬇"; textSize = 24f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
             background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(0xCC555555.toInt()) }
@@ -131,6 +156,8 @@ class OverlayService : Service() {
         }
         wm.addView(tv, lp)
         bubble = tv
+        bubbleVisible = true
+        Detector.listener = { refreshBubble() }
         refreshBubble()
     }
 
@@ -250,6 +277,7 @@ class OverlayService : Service() {
         listBox?.removeAllViews()
         statusV?.text = "⏳ Download shuru…"
         val dir = File(cacheDir, "dl/${System.currentTimeMillis()}").apply { mkdirs() }
+        downloading++
         scope.launch {
             val r = withContext(Dispatchers.IO) {
                 runCatching {
@@ -271,14 +299,16 @@ class OverlayService : Service() {
                     saveFile(f)
                 }
             }
+            downloading--
             val ok = r.getOrNull()
             if (ok != null) {
                 statusV?.text = "✅ Save ho gayi!\nGallery / Files → $ok"
-                notifyNow("✅ Download complete", -1)
+                notifyDone("✅ Download complete - Movies/VideoGrabber")
             } else {
                 statusV?.text = "❌ Download fail:\n" + (r.exceptionOrNull()?.message ?: "").lines().last().take(180)
-                notifyNow("Download fail", -1)
+                notifyDone("❌ Download fail")
             }
+            maybeStop()
         }
     }
 
@@ -311,5 +341,6 @@ class OverlayService : Service() {
     private fun closePanel() {
         runCatching { panel?.let { wm.removeView(it) } }
         panel = null
+        maybeStop()
     }
 }

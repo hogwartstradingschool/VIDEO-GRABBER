@@ -63,11 +63,11 @@ class MainActivity : Activity() {
             row("4. Storage", ok) { requestPermissions(arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), 2) }
         }
         box.addView(Button(this).apply {
-            text = if (OverlayService.running) "⏹ STOP shutter" else "▶ START shutter"
+            text = if (OverlayService.bubbleVisible) "⏹ STOP shutter" else "▶ START shutter"
             textSize = 18f
             setOnClickListener {
-                if (OverlayService.running) {
-                    startService(Intent(this@MainActivity, OverlayService::class.java).setAction(OverlayService.ACTION_STOP))
+                if (OverlayService.bubbleVisible) {
+                    ContextCompat.startForegroundService(this@MainActivity, Intent(this@MainActivity, OverlayService::class.java).setAction(OverlayService.ACTION_STOP))
                     postDelayed({ render() }, 400)
                 } else if (!Settings.canDrawOverlays(this@MainActivity)) {
                     Toast.makeText(this@MainActivity, "Pehle Overlay permission do", Toast.LENGTH_SHORT).show()
@@ -79,7 +79,7 @@ class MainActivity : Activity() {
         })
         box.addView(TextView(this).apply {
             textSize = 14f
-            text = "\nKaise use karein:\n• Browser mein video page kholo → bubble GREEN ho jata hai → bubble dabao → quality chuno.\n" +
+            text = "\nShutter (Quick Settings) se ON/OFF: status bar neeche kheencho → ✏ edit → \"Video Grabber\" tile ko upar le aao. OFF karne par bubble chhup jata hai, lekin kisi app se Share → Video Grabber karo to popup phir bhi aata hai.\n\nKaise use karein:\n• Browser mein video page kholo → bubble GREEN ho jata hai → bubble dabao → quality chuno.\n" +
                 "• YouTube/Facebook/Instagram app mein: Share → Copy link, phir bubble dabao (ya Share → Video Grabber).\n" +
                 "• Files: Gallery/Files → Movies/VideoGrabber"
         })

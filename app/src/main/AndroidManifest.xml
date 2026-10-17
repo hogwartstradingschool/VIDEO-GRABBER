@@ -32,6 +32,15 @@
 
         <service android:name=".OverlayService" android:exported="false" />
 
+        <service android:name=".ShutterTileService" android:exported="true"
+            android:label="Video Grabber"
+            android:icon="@android:drawable/ic_menu_save"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
         <service android:name=".GrabAccessibilityService" android:exported="true"
             android:label="Video Grabber"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
