@@ -73,6 +73,20 @@ box-shadow:inset 0 -4px 6px rgba(80,20,140,.3),0 6px 14px rgba(255,77,141,.4);tr
 .e{max-width:110px;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .st{gap:5px}.st div{padding:5px 2px 6px;min-width:0}.st u{font-size:11.5px;overflow:hidden;text-overflow:ellipsis;display:block}.st i{font-size:9px;letter-spacing:.02em}
 .jb{flex-wrap:nowrap}.pb{padding:7px 14px;white-space:nowrap}
+
+/* --- FLAT 2D liquid-glass: bevel/inner-shadow/3D nahi, glass + soft rounded + giggly animation baqi --- */
+.p{background:var(--gl);box-shadow:none}
+.r{background:linear-gradient(90deg,color-mix(in srgb,var(--c) 26%,transparent),transparent 75%),var(--row);box-shadow:none;border-width:1.5px}
+.c{box-shadow:none}
+.b,.pb{background:linear-gradient(135deg,#ff5c98,#8a64ff);box-shadow:none;border:2px solid rgba(255,255,255,.85)}
+.b.x,.pb.g{background:var(--row);border-color:var(--bd);box-shadow:none}
+.b.ok{background:linear-gradient(135deg,#2ecb8f,#1fb5e8);box-shadow:none}
+.b.pr{background:conic-gradient(#ffe066 calc(var(--p)*1%),rgba(255,255,255,.3) 0)}
+.b.pr::before{background:linear-gradient(135deg,#ff5c98,#8a64ff);box-shadow:none}
+.trk,.jtr,.bar,.sp,.st div,.dt{box-shadow:none}
+.bar{background:linear-gradient(90deg,#ff4d8d,#ffa24c)}
+.j{background:linear-gradient(135deg,color-mix(in srgb,var(--c) 24%,transparent),transparent 70%),var(--gl);box-shadow:none;border-width:1.5px}
+.swim::after{box-shadow:none}
 @media(max-width:380px){.q{font-size:14px}.c{display:none}.m{max-width:30%}.s{font-size:11.5px}.b{width:36px;height:36px}.pb{padding:6px 11px;font-size:12px}}
 `;
 const sv = (d, w = 2.6, extra = '') => `<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" ${extra}>${d}</svg>`;
@@ -103,7 +117,7 @@ function rowHTML(t, j, i, focus) {
   let mid = `<div class="s">${t.size ? '~' + mb(t.size) : ''}</div>`, btn = `<button class="b" data-h="${t.height}" aria-label="Download ${lab}">${ICON}</button>`, bg = '', cls = '';
   const one = (a) => focus ? '' : `<div class="m"><div class="s">${a}</div></div>`;
   if (j && j.status === 'running') {
-    mid = one(j.merging ? 'Merging…' : mbs(j.speed));
+    mid = one(j.merging ? (j.conv ? 'Converting…' : 'Merging…') : mbs(j.speed));
     btn = `<button class="b x sm" data-act="cancel" data-job="${j.id}" aria-label="Cancel">${X}</button>` + ring(j, 'pause', PAUSE); bg = water(j.pct || 0); cls = 'act';
   } else if (j && j.status === 'paused') {
     mid = one('Paused');
@@ -118,7 +132,7 @@ function detailHTML(j) {
   const stats = done ? cell('Size', sz(j.total)) + cell('Took', fT(j.elapsed)) + cell('Avg speed', j.elapsed ? mbs(j.total / j.elapsed) : '—')
     : cell('Speed', run && !j.merging ? mbs(j.speed) : '—') + cell('Downloaded', sz(j.dl)) + cell('Total', j.total ? sz(j.total) : '—') + cell('Time left', run && !j.merging && j.eta ? fT(j.eta) : '—') + cell('Elapsed', fT(j.elapsed)) + cell('Done', Math.round(j.pct || 0) + '%');
   const btns = run ? [['pause', 'Pause', 1], ['cancel', 'Cancel', 0]] : pz ? [['resume', 'Resume', 1], ['cancel', 'Cancel', 0]] : done ? [['open', '📂 Open folder', 1]] : [['resume', 'Retry', 1]];
-  const name = done && j.file ? j.file.split(/[\\/]/).pop() : (j.merging ? 'Merging video + audio…' : run ? 'Downloading…' : pz ? 'Paused' : j.status === 'error' ? 'Error: ' + j.err : 'Canceled');
+  const name = done && j.file ? j.file.split(/[\\/]/).pop() : (j.merging ? (j.conv ? 'Converting to ' + j.height + 'p…' : 'Merging video + audio…') : run ? 'Downloading…' : pz ? 'Paused' : j.status === 'error' ? 'Error: ' + j.err : 'Canceled');
   return `<div class="dt"><div class="dh"><button class="pb g sm" data-back="1">‹ Back</button><span title="${esc(name)}">${esc(name)}</span></div>${done ? '<div class="ok2">Saved ✓ — your video is ready!</div>' : spark(j.hist)}<div class="st s6" style="${done ? 'grid-template-columns:repeat(3,1fr)' : ''}">${stats}</div><div class="jb">${btns.map(x => `<button class="pb ${x[2] ? '' : 'g'}" data-act="${x[0]}" data-job="${j.id}">${x[1]}</button>`).join('')}</div></div>`;
 }
 function panelHTML(d, J, theme, emptyMsg, focus) {
@@ -136,7 +150,7 @@ function jobsHTML(L, theme, emptyMsg) {
     const col = colOf(j.height || 0), lab = j.height ? j.height + 'p' : 'Best', run = j.status === 'running', pz = j.status === 'paused', done = j.status === 'done';
     const sizeTxt = j.total ? sz(j.dl) + ' of ' + sz(j.total) : (j.dl ? sz(j.dl) : '');
     let sub = '', stats = '', bar = '', btns = [];
-    if (run) { sub = j.merging ? 'Merging video + audio…' : 'Downloading' + (sizeTxt ? ' · ' + sizeTxt : ''); btns = [['pause', 'Pause', 1], ['cancel', 'Cancel', 0]]; }
+    if (run) { sub = j.merging ? (j.conv ? 'Converting to ' + j.height + 'p…' : 'Merging video + audio…') : 'Downloading' + (sizeTxt ? ' · ' + sizeTxt : ''); btns = [['pause', 'Pause', 1], ['cancel', 'Cancel', 0]]; }
     else if (pz) { sub = 'Paused' + (sizeTxt ? ' · ' + sizeTxt : ''); btns = [['resume', 'Resume', 1], ['cancel', 'Cancel', 0]]; }
     else if (done) { sub = 'Saved ✓' + (j.total ? ' · ' + sz(j.total) : '') + ' · took ' + fT(j.elapsed); btns = [['open', '📂 Open folder', 1], ['remove', 'Remove', 0]]; }
     else if (j.status === 'error') { sub = 'Error: ' + esc(j.err); btns = [['resume', 'Retry', 1], ['remove', 'Remove', 0]]; }

@@ -60,9 +60,10 @@ object Engine {
     private const val CONC = 32
     private val TIERS = listOf(2160 to "4K", 1440 to "2K", 1080 to "FHD", 720 to "HD", 480 to "SD", 360 to "SD")
 
+    class ConvEx(m: String) : IOException(m)
     class TFile { val done: MutableSet<Int> = java.util.Collections.synchronizedSet(HashSet()); @Volatile var sized = false }
     class Ctl { @Volatile var stop = false; val bytes = AtomicLong(); val conns: MutableSet<HttpURLConnection> = ConcurrentHashMap.newKeySet() }
-    class Dl(val id: Int, val url: String, val height: Int, val size: Long, var title: String) {
+    class Dl(val id: Int, val url: String, val height: Int, val size: Long, var title: String, val conv: Boolean = false) {
         @Volatile var status = "running"; @Volatile var pct = 0.0; @Volatile var speed = 0.0; @Volatile var eta = 0.0
         @Volatile var file = ""; @Volatile var err = ""; @Volatile var merging = false
         @Volatile var dl = 0L; @Volatile var total = 0L
@@ -73,6 +74,7 @@ object Engine {
         @Volatile var coro: kotlinx.coroutines.Job? = null
         @Volatile var histJob: kotlinx.coroutines.Job? = null
         @Volatile var procId: String? = null
+        @Volatile var proc: Process? = null
         @Volatile var token = Any()
         val hist = CopyOnWriteArrayList<Long>()
     }
@@ -91,7 +93,7 @@ object Engine {
                 val a = JSONArray(f.readText())
                 for (i in 0 until a.length()) {
                     val o = a.getJSONObject(i)
-                    val j = Dl(o.getInt("id"), o.getString("url"), o.optInt("height"), o.optLong("size"), o.optString("title"))
+                    val j = Dl(o.getInt("id"), o.getString("url"), o.optInt("height"), o.optLong("size"), o.optString("title"), o.optBoolean("conv"))
                     j.status = o.optString("status", "paused").let { if (it == "running") "paused" else it }
                     j.pct = o.optDouble("pct", 0.0); j.file = o.optString("file"); j.err = o.optString("err")
                     j.elapsedBase = o.optDouble("elapsed", 0.0); j.total = o.optLong("total"); j.dl = o.optLong("dl")
@@ -135,7 +137,7 @@ object Engine {
             val a = JSONArray()
             for (j in jobs.values.sortedBy { it.id }.takeLast(40)) a.put(JSONObject().apply {
                 put("id", j.id); put("url", j.url); put("height", j.height); put("size", j.size); put("title", j.title)
-                put("status", j.status); put("pct", fin(j.pct)); put("file", j.file); put("err", j.err)
+                put("status", j.status); put("pct", fin(j.pct)); put("file", j.file); put("err", j.err); put("conv", j.conv)
                 put("elapsed", elapsedOf(j).toDouble()); put("total", j.total); put("dl", j.dl)
             })
             File(app.filesDir, "jobs.json").writeText(a.toString())
@@ -172,7 +174,7 @@ object Engine {
         put("dl", j.dl); put("total", j.total); put("elapsed", elapsedOf(j)); put("id", j.id); put("url", j.url)
         put("height", j.height); put("size", j.size); put("title", j.title); put("status", j.status)
         put("pct", fin(j.pct)); put("speed", fin(j.speed)); put("eta", fin(j.eta)); put("file", j.file)
-        put("err", j.err); put("merging", j.merging); put("hist", JSONArray(j.hist.takeLast(60)))
+        put("err", j.err); put("merging", j.merging); put("conv", j.conv); put("hist", JSONArray(j.hist.takeLast(60)))
     }
 
     fun jobsJson(): String { val a = JSONArray(); jobs.values.sortedBy { it.id }.forEach { a.put(pub(it)) }; return a.toString() }
@@ -211,8 +213,30 @@ object Engine {
             m.contains("sign in to confirm") || m.contains("inappropriate for some users") || m.contains("age verification")
     }
 
+    // "Unable to extract ... update yt-dlp" => site badal gayi, yt-dlp purana: foran update karke ek baar dobara
+    private fun stale(e: Exception): Boolean {
+        val m = (e.message ?: "").lowercase()
+        return m.contains("unable to extract") || m.contains("latest version") || m.contains("please report this issue")
+    }
+    private val updLock = Any()
+    private var lastForced = 0L
+    private fun forceUpdate(): Boolean = synchronized(updLock) {
+        val now = System.currentTimeMillis()
+        if (now - lastForced < 600_000) return false
+        lastForced = now
+        val ok = updateYtDlp()
+        if (ok) app.getSharedPreferences("vg", 0).edit().putLong("ytdlp_upd", now).apply()
+        ok
+    }
+
     private fun getInfo(url: String): JSONObject =
-        try { runInfo(url, false) } catch (e: Exception) { if (ageGate(e)) runInfo(url, true) else throw e }
+        try { runInfo(url, false) } catch (e: Exception) {
+            when {
+                ageGate(e) -> runInfo(url, true)
+                stale(e) && forceUpdate() -> runInfo(url, false)
+                else -> throw e
+            }
+        }
 
     private fun formatsRaw(url: String): JSONObject {
         ensureInit()
@@ -271,12 +295,80 @@ object Engine {
             tiers.put(JSONObject().put("tier", h).put("height", h).put("chip", "SD").put("size", 0))
         }
         if (tiers.length() == 0) tiers.put(JSONObject().put("tier", 0).put("height", 0).put("chip", "BEST").put("size", 0))
-        return JSONObject().put("title", info.optString("title", "video")).put("duration", dur).put("tiers", tiers)
+        // video mein sirf ek hi quality ho tab bhi 720/480/360 milein: bari quality utar kar phone par chhoti (convert) hoti hai
+        if (vids.isNotEmpty() && tiers.getJSONObject(0).optInt("height") > 0) {
+            val topH = tiers.getJSONObject(0).optInt("height"); val topSz = tiers.getJSONObject(0).optLong("size")
+            for (sH in listOf(720, 480, 360)) {
+                if (tiers.length() >= 9) break
+                if (sH >= topH * 0.92) continue
+                var near = false
+                for (i in 0 until tiers.length()) { val hh = tiers.getJSONObject(i).optInt("height"); if (hh >= sH * 0.92 && hh <= sH * 1.08) near = true }
+                if (near) continue
+                val r = sH.toDouble() / topH
+                val est = if (topSz > 0) (topSz * r * r * 0.7).toLong() else 0L
+                tiers.put(JSONObject().put("tier", sH).put("height", sH).put("chip", "LITE").put("size", est).put("conv", true))
+            }
+        }
+        val sorted = JSONArray()
+        (0 until tiers.length()).map { tiers.getJSONObject(it) }.sortedByDescending { it.optInt("height") }.forEach { sorted.put(it) }
+        return JSONObject().put("title", info.optString("title", "video")).put("duration", dur).put("tiers", sorted)
+    }
+
+    // LITE ke liye source: S se bari sab se choti quality (kam kaam), warna sab se bari
+    private fun srcHeight(info: JSONObject, sH: Int): Int {
+        val fa = info.optJSONArray("formats") ?: return 0
+        val hs = (0 until fa.length()).mapNotNull { fa.optJSONObject(it) }
+            .filter { it.s("vcodec") != "none" }.map { it.optInt("height", 0) }.filter { it > 0 }
+        return hs.filter { it >= sH }.minOrNull() ?: hs.maxOrNull() ?: 0
+    }
+
+    // ---------- convert (ffmpeg, phone par) ----------
+    private fun ffmpegLibDir(): File? = runCatching {
+        File(app.noBackupFilesDir, "youtubedl-android").walkTopDown().firstOrNull { it.name == "libavcodec.so" }?.parentFile
+    }.getOrNull()
+
+    private fun convert(j: Dl, src: File, dur: Double): File {
+        j.merging = true; j.pct = 0.0; j.speed = 0.0; j.eta = 0.0
+        val bin = File(app.applicationInfo.nativeLibraryDir, "libffmpeg.so")
+        val lib = ffmpegLibDir() ?: throw ConvEx("ffmpeg library nahi mili")
+        val out = File(src.parentFile, src.nameWithoutExtension + " ${j.height}p.mp4")
+        val cmd = listOf(bin.absolutePath, "-y", "-i", src.absolutePath, "-vf", "scale=-2:${j.height}",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "27", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", out.absolutePath)
+        val pb = ProcessBuilder(cmd).redirectErrorStream(true)
+        pb.environment()["LD_LIBRARY_PATH"] = lib.absolutePath + ":" + (System.getenv("LD_LIBRARY_PATH") ?: "")
+        val p = try { pb.start() } catch (e: Exception) { throw ConvEx("ffmpeg chal nahi saka: " + (e.message ?: "")) }
+        j.proc = p
+        val tail = ArrayDeque<String>()
+        val rd = Regex("time=(\\d+):(\\d+):(\\d+(?:\\.\\d+)?)")
+        p.inputStream.bufferedReader().use { r ->
+            val sb = StringBuilder()
+            while (true) {
+                val c = r.read(); if (c < 0) break
+                if (c == 13 || c == 10) {
+                    val line = sb.toString(); sb.setLength(0)
+                    if (line.isNotBlank()) {
+                        tail.addLast(line); if (tail.size > 6) tail.removeFirst()
+                        rd.find(line)?.let { m ->
+                            val t = m.groupValues[1].toDouble() * 3600 + m.groupValues[2].toDouble() * 60 + m.groupValues[3].toDouble()
+                            if (dur > 0) j.pct = minOf(99.0, t * 100.0 / dur)
+                        }
+                    }
+                } else sb.append(c.toChar())
+            }
+        }
+        val code = p.waitFor(); j.proc = null
+        if (code != 0 || !out.exists() || out.length() == 0L) {
+            out.delete()
+            throw ConvEx("Convert fail: " + (tail.lastOrNull() ?: "ffmpeg code $code").take(160))
+        }
+        src.delete()
+        return out
     }
 
     // ---------- jobs ----------
-    fun start(url: String, height: Int, size: Long, title: String): JSONObject {
-        val j = synchronized(this) { val d = Dl(++seq, url, height, size, title); jobs[d.id] = d; d }
+    fun start(url: String, height: Int, size: Long, title: String, conv: Boolean = false): JSONObject {
+        val j = synchronized(this) { val d = Dl(++seq, url, height, size, title, conv); jobs[d.id] = d; d }
         runJob(j)
         return pub(j)
     }
@@ -300,6 +392,7 @@ object Engine {
                 if (!j.noTurbo) {
                     try { runTurbo(j, tok); return@launch }
                     catch (e: CancellationException) { throw e }
+                    catch (e: ConvEx) { throw e }
                     catch (e: Exception) {
                         if (j.token !== tok || j.status != "running") return@launch
                         j.ctl?.stop = true; j.noTurbo = true; j.td = null; j.dl = 0; j.pct = 0.0; j.merging = false
@@ -323,6 +416,7 @@ object Engine {
     private fun stopProc(j: Dl) {
         j.ctl?.let { it.stop = true; it.conns.forEach { c -> runCatching { c.disconnect() } } }
         j.procId?.let { id -> runCatching { YoutubeDL.getInstance().destroyProcessById(id) } }
+        runCatching { j.proc?.destroy() }
         j.coro?.cancel(); j.histJob?.cancel()
     }
 
@@ -462,7 +556,7 @@ object Engine {
 
     private suspend fun runTurbo(j: Dl, tok: Any) {
         val info = infoFor(j.url)
-        val sel = pickFormats(info, j.height) ?: throw IOException("no direct formats")
+        val sel = pickFormats(info, if (j.conv) srcHeight(info, j.height) else j.height) ?: throw IOException("no direct formats")
         val key = sel.joinToString("+") { it.s("format_id") }
         if (j.td == null || j.tdKey != key) { j.tdKey = key; j.td = Array(sel.size) { TFile() } }
         val td = j.td!!
@@ -492,13 +586,15 @@ object Engine {
         val ext = if (sel.size == 1) sel[0].s("ext").ifEmpty { "mp4" } else "mp4"
         val out = File(jobDir(j), "$title [${info.optString("id", "")}].$ext")
         withContext(Dispatchers.IO) { if (sel.size == 1) { if (!partOf(j, 0).renameTo(out)) throw IOException("rename failed") } else mux(partOf(j, 0), partOf(j, 1), out) }
+        val outF = if (j.conv) convert(j, out, info.optDouble("duration", 0.0)) else out
         if (j.token !== tok || j.status != "running") return
-        finish(j, out)
+        finish(j, outF)
     }
 
     // ---------- yt-dlp fallback ----------
     private suspend fun runYt(j: Dl, tok: Any) = withContext(Dispatchers.IO) {
-        val dir = jobDir(j); val h = j.height
+        val dir = jobDir(j)
+        val h = if (j.conv) srcHeight(infoFor(j.url), j.height) else j.height
         fun req(emb: Boolean): YoutubeDLRequest {
             val rq = YoutubeDLRequest(j.url)
             rq.addOption("--no-playlist"); rq.addOption("--no-warnings")
@@ -535,7 +631,9 @@ object Engine {
         if (j.token !== tok || j.status != "running") return@withContext
         val f = dir.listFiles()?.filter { !it.name.endsWith(".part") && !it.name.endsWith(".ytdl") && !it.name.startsWith(".") && it.length() > 0 }
             ?.maxByOrNull { it.length() } ?: throw IOException("File nahi bani")
-        finish(j, f)
+        val outF = if (j.conv) convert(j, f, infoFor(j.url).optDouble("duration", 0.0)) else f
+        if (j.token !== tok || j.status != "running") return@withContext
+        finish(j, outF)
     }
 
     // ---------- save ----------

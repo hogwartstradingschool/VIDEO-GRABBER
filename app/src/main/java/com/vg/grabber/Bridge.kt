@@ -32,7 +32,7 @@ class Bridge(private val ctx: Context, private val wv: WebView, private val host
 
     private suspend fun handle(path: String, b: JSONObject): String = when (path) {
         "formats" -> Engine.formats(b.getString("url")).toString()
-        "download" -> Engine.start(b.getString("url"), b.optInt("height"), b.optLong("size"), b.optString("title")).toString()
+        "download" -> Engine.start(b.getString("url"), b.optInt("height"), b.optLong("size"), b.optString("title"), b.optBoolean("conv")).toString()
         "jobs" -> Engine.jobsJson()
         "cancel" -> ok(Engine.cancel(b.getInt("id")))
         "pause" -> ok(Engine.pause(b.getInt("id")))

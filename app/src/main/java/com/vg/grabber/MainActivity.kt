@@ -14,6 +14,9 @@ import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.core.content.ContextCompat
+import androidx.core.content.pm.ShortcutInfoCompat
+import androidx.core.content.pm.ShortcutManagerCompat
+import androidx.core.graphics.drawable.IconCompat
 
 class MainActivity : Activity(), Bridge.Host {
     private lateinit var wv: WebView
@@ -22,6 +25,7 @@ class MainActivity : Activity(), Bridge.Host {
         super.onCreate(b)
         window.statusBarColor = 0xFF0A0A16.toInt(); window.navigationBarColor = 0xFF0A0A16.toInt()
         Engine.attach(this)
+        publishShareTarget()
         wv = WebView(this)
         wv.setBackgroundColor(0xFF0A0A16.toInt())
         wv.settings.javaScriptEnabled = true
@@ -33,6 +37,19 @@ class MainActivity : Activity(), Bridge.Host {
         root.fitsSystemWindows = true
         root.addView(wv, ViewGroup.LayoutParams(-1, -1))
         setContentView(root)
+    }
+
+    // Share sheet ki upar wali "direct share" row mein Video Grabber aaye (sab se pehle nazar aaye)
+    private fun publishShareTarget() {
+        runCatching {
+            val sc = ShortcutInfoCompat.Builder(this, "vg_share")
+                .setShortLabel("Video Grabber").setLongLabel("Video Grabber")
+                .setIcon(IconCompat.createWithResource(this, R.mipmap.ic_launcher))
+                .setIntent(Intent(this, ShareActivity::class.java).setAction(Intent.ACTION_SEND))
+                .setCategories(setOf("com.vg.grabber.category.TEXT_SHARE_TARGET"))
+                .setLongLived(true).build()
+            ShortcutManagerCompat.pushDynamicShortcut(this, sc)
+        }
     }
 
     override fun onResume() { super.onResume(); wv.evaluateJavascript("window.__vgperm&&window.__vgperm()", null) }

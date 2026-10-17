@@ -23,10 +23,18 @@ input{flex:1;min-width:0;background:transparent;border:0;outline:0;color:var(--t
 .t{padding:9px 18px;font-size:12.5px;background:var(--gl);color:var(--tx);border-color:var(--bd);box-shadow:inset 0 3px 0 rgba(255,255,255,.55)}
 #title{font-weight:800;font-size:14px;margin:0 8px 10px;line-height:1.35}#msg{color:#ff6b8a;font-weight:800;font-size:13px;margin:8px 8px;white-space:pre-wrap}
 h2{font-size:15px;margin:22px 8px 10px;font-weight:800}.ft{margin-top:14px;display:flex;gap:8px}
+
+/* flat 2D glass + 1-row header */
+.tb{box-shadow:none}.tb .top{padding:8px 16px}.top{margin-bottom:0}.top svg,.top img{width:36px;height:36px}
+h1{white-space:nowrap;font-size:20px}.top #pup{flex:none}
+.g{background:var(--gl);box-shadow:none;border-width:1.5px}
+.tg{box-shadow:none;width:38px;height:38px;font-size:17px}
+.go{background:linear-gradient(135deg,#ff5c98,#8a64ff);box-shadow:none}.t{box-shadow:none}
+.app{padding-top:14px}
 </style></head><body class="">
 <script src="bridge.js"></script>
 <div class="bl b1"></div><div class="bl b2"></div><div class="bl b3"></div>
-<div class="tb"><div class="top"><div id="pup"></div><div><h1>Video Grabber</h1><p>Paste a link, pick a quality, done!</p></div><button class="tg" id="th" aria-label="Switch theme">🌙</button></div></div>
+<div class="tb"><div class="top"><div id="pup"></div><div><h1>Video Grabber</h1></div><button class="tg" id="th" aria-label="Switch theme">🌙</button></div></div>
 <div class="app">
 <div class="g" id="setup" style="display:none;border-radius:32px;padding:14px 16px;margin-bottom:14px"><b style="font-size:14px">⚙ Setup (sirf ek baar)</b><div id="sl"></div></div>
 <div class="in g"><input id="u" placeholder="Paste a video link here…"><button class="go" id="go">Check</button></div>
@@ -40,7 +48,7 @@ const TOKEN='__TOKEN__';
 const $=id=>document.getElementById(id), pn=$('pn'), dl=$('dl');
 const api=(p,b)=>fetch('/api/'+p,{method:b?'POST':'GET',headers:{'x-vg-token':TOKEN,'content-type':'application/json'},body:b?JSON.stringify(b):undefined}).then(async r=>{const t=await r.text();let j;try{j=JSON.parse(t)}catch(e){j=t}if(!r.ok)throw new Error((j&&j.error)||t||r.status);return j});
 let url='',data=null;const FC={};const fmts=async u=>{const c=FC[u];if(c&&Date.now()-c.t<6e5)return c.d;const d=await api('formats',{url:u});FC[u]={d,t:Date.now()};return d};
-$('pup').innerHTML=window.VGA?'<img src="logo.png" style="width:46px;height:46px;display:block">':window.VGPanel.PUPPY;
+$('pup').innerHTML=window.VGA?'<img src="logo.png" style="width:36px;height:36px;display:block">':window.VGPanel.PUPPY;
 function theme(l){document.body.classList.toggle('light',l);const t=l?'light':'dark';pn.setAttribute('theme',t);dl.setAttribute('theme',t);$('th').textContent=l?'☀️':'🌙';try{localStorage.vgTheme=t}catch(e){}}
 theme((()=>{try{return localStorage.vgTheme?localStorage.vgTheme==='light':matchMedia('(prefers-color-scheme: light)').matches}catch(e){return false}})());
 $('th').onclick=()=>theme(!document.body.classList.contains('light'));
@@ -48,7 +56,7 @@ $('go').onclick=async()=>{url=$('u').value.trim();if(!url)return;$('msg').textCo
  try{data=await fmts(url);$('title').textContent=data.title;pn.data=data}catch(e){$('msg').textContent='Oops: '+e.message}
  $('go').disabled=false;$('go').textContent='Check'};
 $('u').addEventListener('keydown',e=>{if(e.key==='Enter')$('go').click()});
-pn.addEventListener('vg-download',async e=>{const t=e.detail;try{await api('download',{url,height:t.height,size:t.size,title:data.title})}catch(x){$('msg').textContent='Oops: '+x.message}});
+pn.addEventListener('vg-download',async e=>{const t=e.detail;try{await api('download',{url,height:t.height,size:t.size,title:data.title,conv:!!t.conv})}catch(x){$('msg').textContent='Oops: '+x.message}});
 const act=async(a,id)=>{try{await api(a,{id})}catch(e){$('msg').textContent='Oops: '+e.message}};
 pn.addEventListener('vg-job',e=>act(e.detail.act,e.detail.id));dl.addEventListener('vg-job',e=>act(e.detail.act,e.detail.id));
 setInterval(async()=>{try{const L=await api('jobs');dl.data=L;{const r=L.filter(j=>j.status==='running');$('sb').innerHTML='<i class="dot"></i>'+(r.length?r.length+' downloading · '+(r.reduce((a,j)=>a+(j.speed||0),0)/1e6).toFixed(1)+' MB/s total':'Ready')}const m={};L.filter(j=>j.url===url).forEach(j=>{if(!m[j.height]||m[j.height].id<j.id)m[j.height]=j});pn.jobs=m}catch(e){}},800);

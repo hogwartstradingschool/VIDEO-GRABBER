@@ -14,6 +14,10 @@ h1{flex:1;margin:0;font-size:20px;font-weight:800;background:linear-gradient(135
 #msg{color:#ff8fa8;font-weight:800;font-size:13px;margin:6px 10px;white-space:pre-wrap}
 h2{font-size:15px;margin:16px 10px 8px;font-weight:800}
 .t{border:2px solid rgba(255,255,255,.9);color:#fff;font:800 13px Manrope,sans-serif;border-radius:999px;padding:9px 18px;margin:4px 10px;background:linear-gradient(135deg,#ff5c98,#8a64ff);box-shadow:inset 0 -4px 6px rgba(80,20,140,.3),0 8px 18px rgba(255,77,141,.45)}
+
+/* flat 2D glass */
+.card{background:rgba(26,18,64,.9);box-shadow:none;border-width:1.5px}
+.x{box-shadow:none}.t{background:linear-gradient(135deg,#ff5c98,#8a64ff);box-shadow:none}
 </style></head><body>
 <script src="bridge.js"></script><script src="panel.js"></script>
 <div class="sc" id="sc"></div>
@@ -31,7 +35,7 @@ async function check(clip){$('msg').textContent='';$('title').textContent='';pn.
   url=d.url;$('status').textContent=url;data=await fmts(url);$('title').textContent=data.title;$('status').textContent='';pn.data=data}
  catch(e){$('status').textContent='';$('msg').textContent='Oops: '+e.message;$('clip').style.display='inline-block'}}
 $('clip').onclick=()=>check(true);
-pn.addEventListener('vg-download',async e=>{const t=e.detail;try{await api('download',{url,height:t.height,size:t.size,title:data.title})}catch(x){$('msg').textContent='Oops: '+x.message}});
+pn.addEventListener('vg-download',async e=>{const t=e.detail;try{await api('download',{url,height:t.height,size:t.size,title:data.title,conv:!!t.conv})}catch(x){$('msg').textContent='Oops: '+x.message}});
 const act=async(a,id)=>{try{await api(a,{id})}catch(e){$('msg').textContent='Oops: '+e.message}};
 pn.addEventListener('vg-job',e=>act(e.detail.act,e.detail.id));dl.addEventListener('vg-job',e=>act(e.detail.act,e.detail.id));
 setInterval(async()=>{try{const L=await api('jobs');const A=L.filter(j=>j.status==='running'||j.status==='paused'||j.status==='error');dl.data=A;$('dh').style.display=A.length?'block':'none';dl.style.display=A.length?'block':'none';const m={};L.filter(j=>j.url===url).forEach(j=>{if(!m[j.height]||m[j.height].id<j.id)m[j.height]=j});pn.jobs=m}catch(e){}},800);
